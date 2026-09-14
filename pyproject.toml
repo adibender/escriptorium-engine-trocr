@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "escriptorium-engine-trocr"
+version = "0.1.0"
+description = "TrOCR (Hugging Face transformers) recognition engine for eScriptorium"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    # torch is deliberately not listed: eScriptorium's image already carries the CUDA build that
+    # kraken needs, and letting pip resolve a second one would replace it with a CPU wheel
+    "transformers>=5.0,<6",
+    "huggingface_hub>=1.0",
+    "sentencepiece",   # XLM-R tokenizers, e.g. microsoft/trocr-small-*
+    "Pillow",
+]
+
+# The whole integration, as for every engine: installing the package makes TrOCR appear.
+[project.entry-points."escriptorium.engines"]
+trocr = "escriptorium_engine_trocr:TrOCREngine"
+
+[tool.setuptools]
+packages = ["escriptorium_engine_trocr"]
