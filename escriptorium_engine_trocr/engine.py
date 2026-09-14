@@ -21,17 +21,15 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import re
 import threading
 from collections import OrderedDict
 from collections.abc import Iterable, Iterator
 
-from PIL import Image, ImageDraw
-
 from engines.base import (
     SOURCE_HF_REPO,
     BaseEngine,
+    EngineError,
     EngineSpec,
     LineInput,
     ModelInfo,
@@ -39,6 +37,8 @@ from engines.base import (
     RecognitionResult,
     RecognizeOptions,
 )
+from engines.devices import usable_device
+from engines.imaging import crop_line
 
 logger = logging.getLogger(__name__)
 
@@ -61,9 +61,6 @@ SUPPORT_FILE_PATTERNS = ("*.json", "*.txt", "*.model")
 
 BATCH_SIZE = {"cuda": 16, "cpu": 4}
 MAX_NEW_TOKENS = 128
-
-#: when a line arrives with a baseline but no mask, guess a band this fraction of the image high
-BASELINE_BAND_RATIO = 0.02
 
 #: loaded checkpoints per worker process. Engine instances live for one page, and a
 #: base checkpoint takes seconds to load, so without this a 50-page document loads it 50 times.
@@ -190,11 +187,9 @@ class TrOCREngine(BaseEngine):
         page = None
         crops = []
         for line in lines:
-            if not line.baseline:
-                continue
             if page is None:
                 page = image if image.mode == "RGB" else image.convert("RGB")
-            crop = self.line_image(page, line)
+            crop = crop_line(page, line, mask=True)
             if crop is not None:
                 crops.append((line.id, crop))
 
@@ -229,7 +224,7 @@ class TrOCREngine(BaseEngine):
     def _reference(model) -> str:
         reference = getattr(model, "reference", "") if model is not None else ""
         if not reference:
-            raise ValueError("TrOCR needs a model registered by its Hugging Face id.")
+            raise EngineError("TrOCR needs a model registered by its Hugging Face id.")
         return reference
 
     @staticmethod
@@ -242,12 +237,9 @@ class TrOCREngine(BaseEngine):
         was handed to a tokenizer, which fails with "You need to specify either `text` or
         `text_target`". Loading the two halves explicitly works for every checkpoint layout.
         """
-        import torch
         from transformers import AutoImageProcessor, AutoTokenizer, VisionEncoderDecoderModel
 
-        if device.startswith("cuda") and not torch.cuda.is_available():
-            logger.warning("%s requested but CUDA is unavailable here; TrOCR runs on CPU", device)
-            device = "cpu"
+        device = usable_device(device)
 
         repo, revision = parse_reference(reference)
         key = (repo, revision, device)
@@ -304,34 +296,4 @@ class TrOCREngine(BaseEngine):
             )
             if os.path.exists(os.path.join(directory, weights)):
                 return directory, weights
-        raise ValueError(f"{repo}@{revision} has neither {' nor '.join(WEIGHT_FILES)}.")
-
-    @staticmethod
-    def line_image(page: Image.Image, line: LineInput):
-        """The line as TrOCR expects it: tightly cropped, with everything outside the mask white.
-
-        Blanking outside the polygon matters for handwriting, where ascenders and descenders of the
-        neighbouring lines reach into a rectangular crop and get read as part of this one. With no
-        mask, fall back to a band around the baseline.
-        """
-        width, height = page.size
-        if line.boundary and len(line.boundary) >= 3:
-            polygon = [(float(x), float(y)) for x, y in line.boundary]
-        else:
-            xs = [float(point[0]) for point in line.baseline]
-            ys = [float(point[1]) for point in line.baseline]
-            band = max(8.0, height * BASELINE_BAND_RATIO)
-            top, bottom = min(ys) - band, max(ys) + band * 0.25
-            polygon = [(min(xs), top), (max(xs), top), (max(xs), bottom), (min(xs), bottom)]
-
-        left = max(0, int(math.floor(min(x for x, _ in polygon))))
-        top = max(0, int(math.floor(min(y for _, y in polygon))))
-        right = min(width, int(math.ceil(max(x for x, _ in polygon))))
-        bottom = min(height, int(math.ceil(max(y for _, y in polygon))))
-        if right - left < 2 or bottom - top < 2:
-            return None
-
-        crop = page.crop((left, top, right, bottom))
-        mask = Image.new("L", crop.size, 0)
-        ImageDraw.Draw(mask).polygon([(x - left, y - top) for x, y in polygon], fill=255)
-        return Image.composite(crop, Image.new("RGB", crop.size, (255, 255, 255)), mask)
+        raise EngineError(f"{repo}@{revision} has neither {' nor '.join(WEIGHT_FILES)}.")

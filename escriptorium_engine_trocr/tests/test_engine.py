@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 from PIL import Image, ImageDraw
 
-from engines.base import SOURCE_HF_REPO, LineInput, ModelValidationError
+from engines.base import SOURCE_HF_REPO, EngineError, LineInput, ModelValidationError
 from engines.conformance import EngineConformanceMixin
 
 from escriptorium_engine_trocr import TrOCREngine
@@ -77,40 +77,9 @@ class SpecTests(unittest.TestCase):
     def test_recognizing_without_a_reference_is_an_error_not_silence(self):
         page = Image.new("RGB", (200, 60), "white")
         line = LineInput(id="1", baseline=[[5, 40], [190, 40]])
-        with self.assertRaises(ValueError):
+        with self.assertRaises(EngineError):
             list(TrOCREngine().recognize(page, [line], model=SimpleNamespace(reference=""),
                                          options=None))
-
-
-class LineImageTests(unittest.TestCase):
-    def setUp(self):
-        # black everywhere, so anything the mask keeps shows up dark and anything it drops is white
-        self.page = Image.new("RGB", (400, 200), "black")
-
-    def test_outside_the_mask_is_blanked(self):
-        triangle = LineInput(id="1", baseline=[[10, 90], [210, 90]],
-                             boundary=[[10, 10], [210, 10], [10, 110]])
-        crop = TrOCREngine.line_image(self.page, triangle)
-        self.assertEqual(crop.size, (200, 100))
-        self.assertEqual(crop.getpixel((5, 5)), (0, 0, 0), "inside the polygon is kept")
-        self.assertEqual(crop.getpixel((195, 95)), (255, 255, 255), "outside the polygon is blank")
-
-    def test_no_mask_falls_back_to_a_band_around_the_baseline(self):
-        crop = TrOCREngine.line_image(self.page, LineInput(id="1", baseline=[[20, 100], [300, 100]]))
-        self.assertIsNotNone(crop)
-        self.assertEqual(crop.size[0], 280)
-        self.assertGreater(crop.size[1], 8)
-
-    def test_degenerate_geometry_yields_nothing(self):
-        sliver = LineInput(id="1", baseline=[[20, 100], [21, 100]],
-                           boundary=[[20, 99], [21, 99], [21, 100]])
-        self.assertIsNone(TrOCREngine.line_image(self.page, sliver))
-
-    def test_crop_is_clamped_to_the_page(self):
-        overhang = LineInput(id="1", baseline=[[-50, 190], [450, 190]],
-                             boundary=[[-50, 150], [450, 150], [450, 260], [-50, 260]])
-        crop = TrOCREngine.line_image(self.page, overhang)
-        self.assertEqual(crop.size, (400, 50))
 
 
 @unittest.skipIf(_hub_model() is None, "Hugging Face Hub not reachable")
